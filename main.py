@@ -1,9 +1,13 @@
 import sys
 import random
-from PyQt6.QtWidgets import QApplication, QMainWindow, QPushButton, QVBoxLayout, QHBoxLayout, QWidget, QLabel, QGridLayout, QMessageBox
+from PyQt6.QtWidgets import QLineEdit, QDialogButtonBox, QMainWindow, QPushButton, QVBoxLayout, QHBoxLayout, QWidget, QLabel, QDialog, QMessageBox, QApplication
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QPixmap, QFont
 import sqlite3
+
+
+def except_hook(cls, exception, traceback):
+    sys.__excepthook__(cls, exception, traceback)
 
 class Cell(QPushButton):
     def __init__(self, x, y):
@@ -19,7 +23,7 @@ class Minesweeper(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Сапёр")
-        self.setFixedSize(800, 740)
+        self.setFixedSize(820, 740)
         self.central_widget = QWidget()
         self.setStyleSheet("background-color: #bfe6b8;")
         self.setCentralWidget(self.central_widget)
@@ -38,6 +42,20 @@ class Minesweeper(QMainWindow):
         self.layout.addWidget(self.menu_widget)
 
         self.db_connection = sqlite3.connect('minesweeper.db')
+        self.create_database()
+        self.records_button.clicked.connect(self.show_records)
+
+    def create_database(self):
+        cursor = self.db_connection.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS scores (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                player_name TEXT,
+                difficulty TEXT,
+                time INTEGER
+            )
+        ''')
+        self.db_connection.commit()
 
     def create_menu(self):
         image_label = QLabel()
@@ -292,7 +310,7 @@ class Minesweeper(QMainWindow):
         cell.is_revealed = True
         cell.setStyleSheet("""
                 Cell {
-                    background-color: #bfc9b9;
+                    background-color: #ccdbca;
                     border: 1px solid #0a3b1e;
                     margin: 0px;
                     padding: 0px;
@@ -324,11 +342,6 @@ class Minesweeper(QMainWindow):
         colors = ['#0000FF', '#008000', '#FF0000', '#000080', '#800000', '#008080', '#000000', '#808080']
         return colors[number - 1] if 1 <= number <= 8 else '#000000'
 
-    def check_win(self):
-        if all(cell.is_revealed or cell.is_mine for row in self.board for cell in row):
-            self.timer.stop()
-            self.show_win_message()
-
     def game_over(self):
         self.timer.stop()
         for row in self.board:
@@ -336,15 +349,76 @@ class Minesweeper(QMainWindow):
                 if cell.is_mine:
                     cell.setText("💣")
                 cell.setEnabled(False)
-        self.show_game_over_message()
-
-    def show_game_over_message(self):
-        message_box = QMessageBox()
-        message_box.setWindowTitle("Игра окончена")
-        message_box.setText("Вы проиграли!")
-        message_box.setStandardButtons(QMessageBox.StandardButton.Ok)
-        message_box.exec()
+        QMessageBox.information(self, "Игра окончена", "Вы проиграли!")
         self.return_to_menu()
+
+    def check_win(self):
+        if all(cell.is_revealed or cell.is_mine for row in self.board for cell in row):
+            self.timer.stop()
+
+            # Создаем кастомный диалог
+            custom_dialog = QDialog(self)
+            custom_dialog.setWindowTitle("Ввод имени")
+            custom_dialog.setModal(True)
+
+            # Создаем layout
+            layout = QVBoxLayout()
+
+            # Добавляем текст о победе
+            win_label = QLabel(f"Победа! Вы выиграли за {self.time} секунд!")
+            layout.addWidget(win_label)
+
+            # Получаем последние имена из БД
+            conn = sqlite3.connect('minesweeper.db')
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT DISTINCT player_name 
+                FROM scores 
+                ORDER BY id DESC 
+                LIMIT 3
+            ''')
+            recent_names = [row[0] for row in cursor.fetchall()]
+            conn.close()
+
+            name_input = QLineEdit()
+
+            # Создаем кнопки для последних имен
+            if recent_names:
+                recent_label = QLabel("Последние использованные имена:")
+                layout.addWidget(recent_label)
+
+                for name in recent_names:
+                    name_button = QPushButton(name)
+                    name_button.clicked.connect(lambda checked, n=name: name_input.setText(n))
+                    layout.addWidget(name_button)
+
+            layout.addWidget(QLabel("Ваше имя:"))
+            layout.addWidget(name_input)
+
+            button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok )
+            button_box.accepted.connect(custom_dialog.accept)
+            layout.addWidget(button_box)
+
+            custom_dialog.setLayout(layout)
+
+            if recent_names:
+                name_input.setText(recent_names[0])
+
+            if custom_dialog.exec() == QDialog.DialogCode.Accepted:
+                name = name_input.text()
+                if name:
+                    self.save_score(name)
+
+            self.return_to_menu()
+
+    def save_score(self, name):
+        cursor = self.db_connection.cursor()
+        cursor.execute('''
+            INSERT INTO scores (player_name, difficulty, time)
+            VALUES (?, ?, ?)
+        ''', (name, self.width, self.time))
+        self.db_connection.commit()
+
 
     def show_win_message(self):
         message_box = QMessageBox()
@@ -353,6 +427,38 @@ class Minesweeper(QMainWindow):
         message_box.setStandardButtons(QMessageBox.StandardButton.Ok)
         message_box.exec()
         self.return_to_menu()
+
+    def new_record(self, player_name, time):
+        cursor = self.db_connection.cursor()
+        cursor.execute('''
+                INSERT INTO scores (player_name, difficulty, time)
+                VALUES (?, ?, ?)
+            ''', (player_name, self.width, time))
+        self.db_connection.commit()
+
+    def show_records(self):
+        s = {9: 'Новичок', 16: 'Любитель', 30: 'Профи'}
+        record_text = ""
+        for i in [9, 16, 30]:
+            cursor = self.db_connection.cursor()
+            cursor.execute('''
+                    SELECT player_name, time
+                    FROM scores 
+                    WHERE difficulty = ?
+                    ORDER BY time ASC
+                    LIMIT 3''', (i,))
+            records = cursor.fetchall()
+
+            record_text += f"{s[i]}:\n"
+            if records:
+                for j, record in enumerate(records):  # Цикл для вывода топ-3
+                    name = record[0]
+                    time = record[1]
+                    record_text += f"{j + 1}. {name} - {time} сек.\n"
+            else:
+                record_text += "Нет записей.\n"  # Сообщение, если записей нет
+            record_text += "\n"
+        QMessageBox.information(self, "Рекорды", record_text)
 
     def update_timer(self):
         self.time += 1
@@ -363,17 +469,10 @@ class Minesweeper(QMainWindow):
         self.game_widget.hide()
         self.menu_widget.show()
 
-    def get_difficulty(self):
-        if self.width == 9 and self.height == 9:
-            return "Новичок"
-        elif self.width == 16 and self.height == 16:
-            return "Любитель"
-        else:
-            return "Профессионал"
-
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = Minesweeper()
     window.show()
+    sys.excepthook = except_hook
     sys.exit(app.exec())
