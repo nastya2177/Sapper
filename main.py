@@ -3,7 +3,7 @@ import random
 from PyQt6.QtWidgets import QLineEdit, QDialogButtonBox, QMainWindow, QPushButton, QVBoxLayout, QHBoxLayout, QWidget, QLabel, QDialog, QMessageBox, QApplication
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QPixmap, QFont
-import sqlite3
+from base import DatabaseManager
 
 
 def except_hook(cls, exception, traceback):
@@ -41,21 +41,9 @@ class Minesweeper(QMainWindow):
         self.create_menu()
         self.layout.addWidget(self.menu_widget)
 
-        self.db_connection = sqlite3.connect('minesweeper.db')
-        self.create_database()
         self.records_button.clicked.connect(self.show_records)
+        self.db_manager = DatabaseManager()
 
-    def create_database(self):
-        cursor = self.db_connection.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS scores (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                player_name TEXT,
-                difficulty TEXT,
-                time INTEGER
-            )
-        ''')
-        self.db_connection.commit()
 
     def create_menu(self):
         image_label = QLabel()
@@ -349,7 +337,11 @@ class Minesweeper(QMainWindow):
                 if cell.is_mine:
                     cell.setText("💣")
                 cell.setEnabled(False)
-        QMessageBox.information(self, "Игра окончена", "Вы проиграли!")
+        msg = QMessageBox()
+        msg.setWindowTitle("Игра окончена")
+        msg.setText("Вы проиграли!")
+        msg = self.msg_style(msg)
+        msg.exec()
         self.return_to_menu()
 
     def check_win(self):
@@ -358,27 +350,16 @@ class Minesweeper(QMainWindow):
 
             # Создаем кастомный диалог
             custom_dialog = QDialog(self)
+            custom_dialog = self.msg_style(custom_dialog)
             custom_dialog.setWindowTitle("Ввод имени")
             custom_dialog.setModal(True)
 
-            # Создаем layout
             layout = QVBoxLayout()
 
-            # Добавляем текст о победе
             win_label = QLabel(f"Победа! Вы выиграли за {self.time} секунд!")
             layout.addWidget(win_label)
 
-            # Получаем последние имена из БД
-            conn = sqlite3.connect('minesweeper.db')
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT DISTINCT player_name 
-                FROM scores 
-                ORDER BY id DESC 
-                LIMIT 3
-            ''')
-            recent_names = [row[0] for row in cursor.fetchall()]
-            conn.close()
+            recent_names = self.db_manager.get_recent_names()
 
             name_input = QLineEdit()
 
@@ -395,7 +376,7 @@ class Minesweeper(QMainWindow):
             layout.addWidget(QLabel("Ваше имя:"))
             layout.addWidget(name_input)
 
-            button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok )
+            button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
             button_box.accepted.connect(custom_dialog.accept)
             layout.addWidget(button_box)
 
@@ -407,58 +388,71 @@ class Minesweeper(QMainWindow):
             if custom_dialog.exec() == QDialog.DialogCode.Accepted:
                 name = name_input.text()
                 if name:
-                    self.save_score(name)
+                    self.db_manager.save_score(name, self.width, self.time)
 
             self.return_to_menu()
-
-    def save_score(self, name):
-        cursor = self.db_connection.cursor()
-        cursor.execute('''
-            INSERT INTO scores (player_name, difficulty, time)
-            VALUES (?, ?, ?)
-        ''', (name, self.width, self.time))
-        self.db_connection.commit()
-
-
-    def show_win_message(self):
-        message_box = QMessageBox()
-        message_box.setWindowTitle("Победа!")
-        message_box.setText(f"Вы выиграли! Ваше время: {self.time} секунд")
-        message_box.setStandardButtons(QMessageBox.StandardButton.Ok)
-        message_box.exec()
-        self.return_to_menu()
-
-    def new_record(self, player_name, time):
-        cursor = self.db_connection.cursor()
-        cursor.execute('''
-                INSERT INTO scores (player_name, difficulty, time)
-                VALUES (?, ?, ?)
-            ''', (player_name, self.width, time))
-        self.db_connection.commit()
 
     def show_records(self):
         s = {9: 'Новичок', 16: 'Любитель', 30: 'Профи'}
         record_text = ""
         for i in [9, 16, 30]:
-            cursor = self.db_connection.cursor()
-            cursor.execute('''
-                    SELECT player_name, time
-                    FROM scores 
-                    WHERE difficulty = ?
-                    ORDER BY time ASC
-                    LIMIT 3''', (i,))
-            records = cursor.fetchall()
+            records = self.db_manager.get_records_by_difficulty(i)
 
-            record_text += f"{s[i]}:\n"
+            record_text += f"<h2>{s[i]}:</h2>"
             if records:
-                for j, record in enumerate(records):  # Цикл для вывода топ-3
+                for j, record in enumerate(records):
                     name = record[0]
                     time = record[1]
-                    record_text += f"{j + 1}. {name} - {time} сек.\n"
+                    record_text += f"<p>{j + 1}. {name} - {time} сек.</p>"
             else:
-                record_text += "Нет записей.\n"  # Сообщение, если записей нет
-            record_text += "\n"
-        QMessageBox.information(self, "Рекорды", record_text)
+                record_text += "<p>Нет записей.</p>"
+            record_text += "<br>"
+
+        msg = QMessageBox()
+        msg.setWindowTitle("Рекорды")
+        msg.setText(record_text)
+        msg = self.msg_style(msg)
+        msg.exec()
+
+    def closeEvent(self, event):
+        # Закрываем соединение с БД при закрытии приложения
+        self.db_manager.close_connection()
+        event.accept()
+
+    def msg_style(self, msg):
+        msg.setStyleSheet("""
+                    QMessageBox {
+                        background-color: #c1e6b5; 
+                    }
+                    QLabel {
+                        min-width: 300px;
+                        font-size: 16pt;
+                        font-family: 'Trebuchet MS';
+                        color: #520c06;
+                        background-color: #c1e6b5;
+                    }
+                    QPushButton {
+                        background-color: #436946;
+                        color: white;
+                        padding: 10px;
+                        border-radius: 3px;
+                        font-size: 12pt;
+                        font-family: 'Trebuchet MS';
+                    }
+                    QPushButton:hover {
+                        background-color: #5F9EA0;
+                    }
+                    h2 {
+                        color: #FFD700;
+                        font-family: 'Trebuchet MS';
+                    }
+                    p {
+                        font-size: 14pt;
+                        font-family: 'Trebuchet MS';
+                        color: #E0FFFF;
+                    }
+                """)
+        return msg
 
     def update_timer(self):
         self.time += 1
